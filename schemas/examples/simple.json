@@ -1,0 +1,17 @@
+{
+    "schema_version": "1.0",
+    "nodes": [
+        { "id": "ingest", "type": "webhook" },
+        { "id": "transform", "type": "transform", "config": { "expression": "$.user"} },
+        {
+            "id": "call_api",
+            "type": "http",
+            "config": { "method": "POST", "url": "https://api.example.com/orders" },
+            "retry": { "max_attempts": 3, "backoff_seconds": 5 }
+        }
+    ],
+    "edges": [
+        { "from": "ingest", "to": "transform" },
+        { "from": "transform", "to": "call_api" }
+    ]
+}

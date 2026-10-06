@@ -1,4 +1,4 @@
-module github.com/YOUR_USER/flowmesh/engine
+module github.com/NtohnwiBih/flowmesh/engine
 
 go 1.26.5
 

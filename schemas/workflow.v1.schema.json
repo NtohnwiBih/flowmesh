@@ -1,0 +1,45 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "FlowMesh Workflow Definition v1",
+    "type": "object",   
+    "required": ["schema_version", "nodes", "edges"],
+    "additionalProperties": false,
+    "properties": {
+        "schema_version": { "const": "1" },
+        "nodes": {
+            "type": "array",
+            "minItems": 1,
+            "items": { 
+                "type": "object",
+                "required": ["id", "type"],
+                "additionalProperties": false,
+                "properties": {
+                    "id": { "type": "string", "minLength": 1 },
+                    "type": { "type": "string", "minLength": 1 },
+                    "config": { "type": "object" },
+                    "retry": {
+                        "type": "object",
+                        "required": ["max_attempts"],
+                        "additionalProperties": false,
+                        "properties": {
+                            "max_attempts": { "type": "integer", "minimum": 1 },
+                            "backoff_seconds": { "type": "integer", "minimum": 0 }
+                        }
+                    }
+                }
+            }
+        },
+        "edges": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["from", "to"],
+                "additionalProperties": false,
+                "properties": {
+                    "from": { "type": "string" },
+                    "to": { "type": "string" }
+                }
+            }
+        }
+    }
+}
