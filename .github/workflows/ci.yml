@@ -15,6 +15,6 @@ jobs:
       - run: make up
       - run: go vet ./...
         working-directory: engine
-      - run: go test ./..
+      - run: go test ./...
         working-directory: engine
       - run: make smoke 
