@@ -15,3 +15,6 @@ smoke:
 
 migrate-new:
 	migrate create -ext sql -dir db/migrations -seq $(name)
+
+test:
+	cd engine && go test ./...
