@@ -6,7 +6,7 @@ import asyncpg
 import httpx
 import pytest
 import pytest_asyncio
-from testcontainers.postgres import PostgresContainer
+from testcontainers.community.postgres import PostgresContainer
 
 from app.main import create_app
 

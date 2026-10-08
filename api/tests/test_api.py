@@ -28,10 +28,9 @@ async def test_healthz(client):
     assert r.status_code == 200 and r.json() == {"status": "ok"}
 
 
-async def test_duplicate_slug_is_conflict(client, workspace):
-    slug = (await client.get("/healthz")) and "dup-slug-test"
-    body = {"name": "x", "slug": slug}
-    assert (await client.post("/v1/workspaces", json=body)).status_code in (201, 409)
+async def test_duplicate_slug_is_conflict(client):
+    body = {"name": "x", "slug": "dup-slug-test"}
+    assert (await client.post("/v1/workspaces", json=body)).status_code == 201
     assert (await client.post("/v1/workspaces", json=body)).status_code == 409
 
 
