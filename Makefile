@@ -1,4 +1,4 @@
-.PHONY: up down logs smoke migrate-new
+.PHONY: up down logs smoke migrate-new test run-engine run-worker run-api
 
 up:
 	docker compose up -d postgres redis minio
@@ -18,3 +18,12 @@ migrate-new:
 
 test:
 	cd engine && go test ./...
+
+run-engine:
+	set -a && . ./.env && set +a && cd engine && go run ./cmd/engine
+
+run-worker:
+	set -a && . ./.env && set +a && cd engine && go run ./cmd/worker
+
+run-api:
+	set -a && . ./.env && set +a && cd api && .venv/bin/uvicorn app.main:app --reload

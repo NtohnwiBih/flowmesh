@@ -5,3 +5,5 @@ __pycache__/
 .venv/
 bin/
 .next/
+api/.venv/
+.pytest_cache/

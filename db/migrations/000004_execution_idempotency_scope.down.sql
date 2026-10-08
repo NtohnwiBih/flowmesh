@@ -1,0 +1,2 @@
+ALTER TABLE workflow_executions DROP CONSTRAINT IF EXISTS uq_execution_idempotency;
+ALTER TABLE workflow_executions ADD CONSTRAINT workflow_executions_idempotency_key_key UNIQUE (idempotency_key);
