@@ -262,3 +262,25 @@ func (d *Dispatcher) Release(ctx context.Context, taskID string) error {
 	}
 	return nil
 }
+
+// PeekResult returns the oldest unprocessed result (raw JSON) without removing
+// it. It returns "" when there are none. Call DropResult only after the result
+// has been recorded, so a crash in between cannot lose it.
+func (d *Dispatcher) PeekResult(ctx context.Context) (string, error) {
+	raw, err := d.rdb.LIndex(ctx, keyResults, -1).Result() // LPUSH adds at the head, so the oldest is at the tail
+	if errors.Is(err, redis.Nil) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("peek result: %w", err)
+	}
+	return raw, nil
+}
+
+// DropResult removes one result (the oldest matching copy).
+func (d *Dispatcher) DropResult(ctx context.Context, raw string) error {
+	if err := d.rdb.LRem(ctx, keyResults, -1, raw).Err(); err != nil {
+		return fmt.Errorf("drop result: %w", err)
+	}
+	return nil
+}
