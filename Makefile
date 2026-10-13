@@ -26,4 +26,4 @@ run-worker:
 	set -a && . ./.env && set +a && cd engine && go run ./cmd/worker
 
 run-api:
-	set -a && . ./.env && set +a && cd api && .venv/bin/uvicorn app.main:app --reload
+	set -a && . ./.env && set +a && cd api && .venv/bin/uvicorn app.main:app --reload --port 8080
