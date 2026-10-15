@@ -23,17 +23,21 @@ const (
 // engine should do. It does not do anything itself.
 type Action struct {
 	Type    ActionType
-	NodeID  string        // for ScheduleNode and FailExecution
-	Attempt int           // for ScheduleNode
-	Delay   time.Duration // for ScheduleNode: wait this long before dispatching
-	Reason  string        // for FailExecution: human-readable explanation
+	NodeID  string
+	Attempt int
+	Delay   time.Duration
+	Reason  string
+	Input   json.RawMessage // for StartExecution
 }
 
 // Event converts an action into the event to record in the event store.
 func (a Action) Event() eventstore.NewEvent {
 	switch a.Type {
 	case ActStartExecution:
-		return eventstore.NewEvent{Type: eventstore.EventExecutionStarted}
+		return eventstore.NewEvent{
+			Type:          eventstore.EventExecutionStarted,
+			InlinePayload: a.Input,
+		}
 	case ActScheduleNode:
 		return eventstore.NewEvent{
 			Type:    eventstore.EventNodeScheduled,

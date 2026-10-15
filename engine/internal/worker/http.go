@@ -29,8 +29,12 @@ func HTTPHandler(client *http.Client) Handler {
 		client = &http.Client{Timeout: 30 * time.Second}
 	}
 	return func(ctx context.Context, t dispatch.Task) (json.RawMessage, error) {
+		resolved, err := Resolve(t.Config, t.Context)
+		if err != nil {
+			return nil, err
+		}
 		var c httpConfig
-		if err := json.Unmarshal(t.Config, &c); err != nil {
+		if err := json.Unmarshal(resolved, &c); err != nil {
 			return nil, fmt.Errorf("bad http config: %w", err)
 		}
 		if c.URL == "" {

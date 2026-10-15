@@ -312,3 +312,41 @@ func TestCrashWithoutRetryPolicyFailsTheExecution(t *testing.T) {
 	}
 	waitStatus(t, execID, "FAILED", 10*time.Second)
 }
+
+// The first node's OUTPUT and the trigger INPUT both reach the second node.
+func TestInputAndUpstreamOutputReachDownstreamNodes(t *testing.T) {
+	d := fresh(t)
+	execID := seedExecution(t, `{"schema_version":1,
+	 "nodes":[{"id":"first","type":"http"},
+	          {"id":"second","type":"http","config":{"who":"{{ input.name }}","got":"{{ nodes.first.v }}"}}],
+	 "edges":[{"from":"first","to":"second"}]}`)
+	if _, err := pool.Exec(context.Background(),
+		`UPDATE workflow_executions SET input = '{"name":"Ada"}' WHERE id = $1`, execID); err != nil {
+		t.Fatal(err)
+	}
+
+	var mu sync.Mutex
+	seen := map[string]json.RawMessage{}
+	handler := func(_ context.Context, tk dispatch.Task) (json.RawMessage, error) {
+		resolved, err := worker.Resolve(tk.Config, tk.Context)
+		if err != nil {
+			return nil, err
+		}
+		mu.Lock()
+		seen[tk.NodeID] = resolved
+		mu.Unlock()
+		return json.RawMessage(`{"v":"from-first"}`), nil
+	}
+
+	startRunner(t, d)
+	startWorker(t, d, handler)
+	waitStatus(t, execID, "COMPLETED", 10*time.Second)
+
+	mu.Lock()
+	defer mu.Unlock()
+	var got map[string]string
+	_ = json.Unmarshal(seen["second"], &got)
+	if got["who"] != "Ada" || got["got"] != "from-first" {
+		t.Errorf("second node saw %s", seen["second"])
+	}
+}

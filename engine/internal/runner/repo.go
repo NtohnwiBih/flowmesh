@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -15,6 +16,7 @@ type Repo interface {
 	Definition(ctx context.Context, executionID string) (*workflow.Definition, error)
 	SetStatus(ctx context.Context, executionID string, st replay.ExecStatus) error
 	ListByStatus(ctx context.Context, statuses ...string) ([]string, error)
+	Input(ctx context.Context, executionID string) (json.RawMessage, error)
 }
 
 // PGRepo implements Repo on PostgreSQL.
@@ -68,4 +70,14 @@ func (p PGRepo) ListByStatus(ctx context.Context, statuses ...string) ([]string,
 		ids = append(ids, id)
 	}
 	return ids, rows.Err()
+}
+
+func (p PGRepo) Input(ctx context.Context, executionID string) (json.RawMessage, error) {
+	var raw []byte
+	err := p.Pool.QueryRow(ctx,
+		`SELECT input FROM workflow_executions WHERE id = $1`, executionID).Scan(&raw)
+	if err != nil {
+		return nil, fmt.Errorf("load input for %s: %w", executionID, err)
+	}
+	return json.RawMessage(raw), nil // nil when the column is NULL
 }

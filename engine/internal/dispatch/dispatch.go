@@ -37,6 +37,7 @@ type Task struct {
 	Queue          string          `json:"queue"`           // which workers may take it
 	IdempotencyKey string          `json:"idempotency_key"` // same for every attempt
 	Config         json.RawMessage `json:"config,omitempty"`
+	Context        json.RawMessage `json:"context,omitempty"` // {"input":..., "nodes":{...}}
 }
 
 // NewTask builds the task for one attempt of one node.

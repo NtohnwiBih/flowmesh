@@ -125,3 +125,16 @@ def test_example_workflows_are_valid():
             Definition.model_validate(json.loads(f.read_text()))
         except Exception as e:
             raise AssertionError(f"{f.name}: {e}") from e
+
+async def test_trigger_input_is_stored(client, workspace, dsn):
+    import asyncpg
+
+    wf = await make_workflow(client, workspace)
+    r = await client.post(f"/v1/workflows/{wf}/executions", json={"order_id": 42})
+    assert r.status_code == 202
+    conn = await asyncpg.connect(dsn)
+    try:
+        raw = await conn.fetchval("SELECT input FROM workflow_executions WHERE id = $1", __import__("uuid").UUID(r.json()["id"]))
+    finally:
+        await conn.close()
+    assert json.loads(raw) == {"order_id": 42}

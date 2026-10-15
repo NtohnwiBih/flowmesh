@@ -1,9 +1,9 @@
 import json
-from typing import Annotated
+from typing import Annotated, Any
 from uuid import UUID
 
 import asyncpg
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
+from fastapi import APIRouter,Body, Depends, Header, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 from app.definition import Definition
@@ -127,13 +127,13 @@ async def get_version(workflow_id: UUID, version: int, pool: Pool):
     out["definition"] = _decode_json(out["definition"])
     return out
 
-
 @router.post("/v1/workflows/{workflow_id}/executions", status_code=202)
 async def trigger_execution(
     workflow_id: UUID,
     response: Response,
     pool: Pool,
     idempotency_key: Annotated[str | None, Header(max_length=255)] = None,
+    input: Annotated[Any, Body()] = None,
 ):
     wf = await pool.fetchrow("SELECT id, is_active FROM workflows WHERE id = $1", workflow_id)
     if wf is None:
@@ -149,11 +149,13 @@ async def trigger_execution(
         raise HTTPException(409, "workflow has no published version")
 
     row = await pool.fetchrow(
-        """INSERT INTO workflow_executions (workflow_id, workflow_version_id, initiated_by, idempotency_key)
-           VALUES ($1, $2, 'api', $3)
+        """INSERT INTO workflow_executions
+               (workflow_id, workflow_version_id, initiated_by, idempotency_key, input)
+           VALUES ($1, $2, 'api', $3, $4::jsonb)
            ON CONFLICT (workflow_id, idempotency_key) DO NOTHING
            RETURNING id, status::text AS status, workflow_version_id""",
         workflow_id, version_id, idempotency_key,
+        None if input is None else json.dumps(input),
     )
     if row is None:  # same key seen before: return the original execution
         row = await pool.fetchrow(

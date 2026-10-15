@@ -109,6 +109,15 @@ func (r *Runner) Advance(ctx context.Context, executionID string) error {
 		if len(actions) == 0 {
 			return r.settle(ctx, executionID, def, st)
 		}
+		for i := range actions {
+			if actions[i].Type == scheduler.ActStartExecution {
+				in, err := r.repo.Input(ctx, executionID)
+				if err != nil {
+					return err
+				}
+				actions[i].Input = in
+			}
+		}
 
 		newEvents := make([]eventstore.NewEvent, len(actions))
 		for i, a := range actions {
@@ -132,9 +141,7 @@ func (r *Runner) Advance(ctx context.Context, executionID string) error {
 				return fmt.Errorf("scheduler returned unknown node %q", a.NodeID)
 			}
 			task := dispatch.NewTask(executionID, node, a.Attempt)
-			if _, err := r.disp.Enqueue(ctx, task, a.Delay); err != nil {
-				return err
-			}
+			task.Context = buildContext(def, st)
 		}
 	}
 	return fmt.Errorf("execution %s: advance did not settle", executionID)
@@ -152,8 +159,9 @@ func (r *Runner) settle(ctx context.Context, id string, def *workflow.Definition
 	for _, n := range def.Nodes {
 		ns := st.Nodes[n.ID]
 		if ns.Status == replay.NodeScheduled {
-			// Idempotent: a no-op when the task is already in Redis.
-			if _, err := r.disp.Enqueue(ctx, dispatch.NewTask(id, n, ns.Attempt), 0); err != nil {
+			task := dispatch.NewTask(id, n, ns.Attempt)
+			task.Context = buildContext(def, st)
+			if _, err := r.disp.Enqueue(ctx, task, 0); err != nil {
 				return err
 			}
 		}

@@ -46,7 +46,8 @@ type NodeState struct {
 type State struct {
 	Status  ExecStatus
 	Nodes   map[string]*NodeState
-	LastSeq int // pass this as expectedLast to Store.Append
+	Input   json.RawMessage // trigger payload from EXECUTION_STARTED
+	LastSeq int
 }
 
 // Replay rebuilds the state of an execution from its history.
@@ -84,6 +85,7 @@ func (s *State) apply(e eventstore.Event) error {
 			return errors.New("execution already started")
 		}
 		s.Status = ExecRunning
+		s.Input = e.InlinePayload
 
 	case eventstore.EventNodeScheduled:
 		n, err := s.node(e)
