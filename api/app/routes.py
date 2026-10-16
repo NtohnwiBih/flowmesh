@@ -1,4 +1,6 @@
+import hashlib
 import json
+import secrets
 from typing import Annotated, Any
 from uuid import UUID
 
@@ -18,6 +20,9 @@ def get_pool(request: Request) -> asyncpg.Pool:
 Pool = Annotated[asyncpg.Pool, Depends(get_pool)]
 
 
+MAX_HOOK_BODY = 1024 * 1024  # 1 MiB
+
+
 # ------------------------------------------------------------ request bodies
 class WorkspaceCreate(BaseModel):
     name: str = Field(min_length=1, max_length=255)
@@ -32,6 +37,10 @@ class WorkflowCreate(BaseModel):
 
 class VersionCreate(BaseModel):
     definition: Definition
+    
+
+class WebhookCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
 
 
 # ------------------------------------------------------------------ helpers
@@ -57,6 +66,51 @@ async def _publish(conn: asyncpg.Connection, workflow_id: UUID, defn: Definition
         workflow_id, _dump(defn),
     )
     return dict(row)
+
+
+def _hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+async def _start_execution(
+    pool: asyncpg.Pool,
+    workflow_id: UUID,
+    input_value,
+    idempotency_key: str | None,
+    initiated_by: str,
+) -> tuple[dict, bool]:
+    """Create a PENDING execution of the latest version.
+    Returns (row, created). created is False when the idempotency key was already used."""
+    wf = await pool.fetchrow("SELECT id, is_active FROM workflows WHERE id = $1", workflow_id)
+    if wf is None:
+        raise HTTPException(404, "workflow not found")
+    if not wf["is_active"]:
+        raise HTTPException(409, "workflow is not active")
+
+    version_id = await pool.fetchval(
+        "SELECT id FROM workflow_versions WHERE workflow_id = $1 ORDER BY version DESC LIMIT 1",
+        workflow_id,
+    )
+    if version_id is None:
+        raise HTTPException(409, "workflow has no published version")
+
+    row = await pool.fetchrow(
+        """INSERT INTO workflow_executions
+               (workflow_id, workflow_version_id, initiated_by, idempotency_key, input)
+           VALUES ($1, $2, $3, $4, $5::jsonb)
+           ON CONFLICT (workflow_id, idempotency_key) DO NOTHING
+           RETURNING id, status::text AS status, workflow_version_id""",
+        workflow_id, version_id, initiated_by, idempotency_key,
+        None if input_value is None else json.dumps(input_value),
+    )
+    if row is not None:
+        return dict(row), True
+    row = await pool.fetchrow(
+        """SELECT id, status::text AS status, workflow_version_id FROM workflow_executions
+           WHERE workflow_id = $1 AND idempotency_key = $2""",
+        workflow_id, idempotency_key,
+    )
+    return dict(row), False
 
 
 # ---------------------------------------------------------------- endpoints
@@ -135,36 +189,10 @@ async def trigger_execution(
     idempotency_key: Annotated[str | None, Header(max_length=255)] = None,
     input: Annotated[Any, Body()] = None,
 ):
-    wf = await pool.fetchrow("SELECT id, is_active FROM workflows WHERE id = $1", workflow_id)
-    if wf is None:
-        raise HTTPException(404, "workflow not found")
-    if not wf["is_active"]:
-        raise HTTPException(409, "workflow is not active")
-
-    version_id = await pool.fetchval(
-        "SELECT id FROM workflow_versions WHERE workflow_id = $1 ORDER BY version DESC LIMIT 1",
-        workflow_id,
-    )
-    if version_id is None:
-        raise HTTPException(409, "workflow has no published version")
-
-    row = await pool.fetchrow(
-        """INSERT INTO workflow_executions
-               (workflow_id, workflow_version_id, initiated_by, idempotency_key, input)
-           VALUES ($1, $2, 'api', $3, $4::jsonb)
-           ON CONFLICT (workflow_id, idempotency_key) DO NOTHING
-           RETURNING id, status::text AS status, workflow_version_id""",
-        workflow_id, version_id, idempotency_key,
-        None if input is None else json.dumps(input),
-    )
-    if row is None:  # same key seen before: return the original execution
-        row = await pool.fetchrow(
-            """SELECT id, status::text AS status, workflow_version_id FROM workflow_executions
-               WHERE workflow_id = $1 AND idempotency_key = $2""",
-            workflow_id, idempotency_key,
-        )
+    row, created = await _start_execution(pool, workflow_id, input, idempotency_key, "api")
+    if not created:
         response.status_code = 200
-    return dict(row)
+    return row
 
 
 @router.get("/v1/executions/{execution_id}")
@@ -196,3 +224,57 @@ async def get_events(execution_id: UUID, pool: Pool):
         e["inline_payload"] = _decode_json(e["inline_payload"])
         events.append(e)
     return events
+
+
+@router.post("/v1/workflows/{workflow_id}/webhooks", status_code=201)
+async def create_webhook(workflow_id: UUID, body: WebhookCreate, pool: Pool):
+    token = secrets.token_urlsafe(32)
+    try:
+        row = await pool.fetchrow(
+            """INSERT INTO webhooks (workflow_id, name, token_hash) VALUES ($1, $2, $3)
+               RETURNING id, workflow_id, name, created_at""",
+            workflow_id, body.name, _hash_token(token),
+        )
+    except asyncpg.ForeignKeyViolationError:
+        raise HTTPException(404, "workflow not found")
+    out = dict(row)
+    out["token"] = token            # shown ONCE: only the hash is stored
+    out["url"] = f"/hooks/{token}"
+    return out
+
+
+@router.post("/hooks/{token}", status_code=202)
+async def receive_hook(
+    token: str,
+    request: Request,
+    response: Response,
+    pool: Pool,
+    idempotency_key: Annotated[str | None, Header(max_length=255)] = None,
+):
+    hook = await pool.fetchrow(
+        "SELECT id, workflow_id FROM webhooks WHERE token_hash = $1 AND is_active",
+        _hash_token(token),
+    )
+    if hook is None:
+        raise HTTPException(404, "not found")
+
+    # Read the body in chunks so an oversized upload is cut off early.
+    chunks, size = [], 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > MAX_HOOK_BODY:
+            raise HTTPException(413, "body too large")
+        chunks.append(chunk)
+    raw = b"".join(chunks)
+
+    try:
+        payload = json.loads(raw) if raw.strip() else None
+    except ValueError:
+        raise HTTPException(422, "body must be valid JSON")
+
+    row, created = await _start_execution(
+        pool, hook["workflow_id"], payload, idempotency_key, f"webhook:{hook['id']}"
+    )
+    if not created:
+        response.status_code = 200
+    return row
