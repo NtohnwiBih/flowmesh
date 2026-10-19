@@ -10,14 +10,11 @@ from pydantic import BaseModel, Field
 
 from app.definition import Definition
 
+from app.deps import Pool
+from app.auth import CurrentUser, require
+
 router = APIRouter()
 
-
-def get_pool(request: Request) -> asyncpg.Pool:
-    return request.app.state.pool
-
-
-Pool = Annotated[asyncpg.Pool, Depends(get_pool)]
 
 
 MAX_HOOK_BODY = 1024 * 1024  # 1 MiB
@@ -37,7 +34,7 @@ class WorkflowCreate(BaseModel):
 
 class VersionCreate(BaseModel):
     definition: Definition
-    
+
 
 class WebhookCreate(BaseModel):
     name: str = Field(min_length=1, max_length=255)
@@ -121,18 +118,36 @@ async def healthz(pool: Pool):
 
 
 @router.post("/v1/workspaces", status_code=201)
-async def create_workspace(body: WorkspaceCreate, pool: Pool):
-    try:
-        row = await pool.fetchrow(
-            "INSERT INTO workspaces (name, slug) VALUES ($1, $2) RETURNING id, name, slug, created_at",
-            body.name, body.slug,
-        )
-    except asyncpg.UniqueViolationError:
-        raise HTTPException(409, "slug already in use")
+async def create_workspace(body: WorkspaceCreate, pool: Pool, user: CurrentUser):
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            try:
+                row = await conn.fetchrow(
+                    "INSERT INTO workspaces (name, slug) VALUES ($1, $2) RETURNING id, name, slug, created_at",
+                    body.name, body.slug,
+                )
+            except asyncpg.UniqueViolationError:
+                raise HTTPException(409, "slug already in use")
+            await conn.execute(
+                "INSERT INTO workspace_members (workspace_id, user_id, role) VALUES ($1, $2, 'admin')",
+                row["id"], user,
+            )
     return dict(row)
 
 
-@router.post("/v1/workspaces/{workspace_id}/workflows", status_code=201)
+@router.get("/v1/workspaces")
+async def list_workspaces(pool: Pool, user: CurrentUser):
+    rows = await pool.fetch(
+        """SELECT w.id, w.name, w.slug, m.role::text AS role
+             FROM workspaces w JOIN workspace_members m ON m.workspace_id = w.id
+            WHERE m.user_id = $1 ORDER BY w.created_at""",
+        user,
+    )
+    return [dict(r) for r in rows]
+
+
+@router.post("/v1/workspaces/{workspace_id}/workflows", status_code=201,
+             dependencies=[Depends(require("editor", "workspace"))])
 async def create_workflow(workspace_id: UUID, body: WorkflowCreate, pool: Pool):
     async with pool.acquire() as conn:
         async with conn.transaction():
@@ -151,7 +166,7 @@ async def create_workflow(workspace_id: UUID, body: WorkflowCreate, pool: Pool):
     return out
 
 
-@router.get("/v1/workspaces/{workspace_id}/workflows")
+@router.get("/v1/workspaces/{workspace_id}/workflows", dependencies=[Depends(require("viewer", "workspace"))])
 async def list_workflows(workspace_id: UUID, pool: Pool):
     rows = await pool.fetch(
         """SELECT w.id, w.name, w.description, w.is_active, w.created_at,
@@ -162,14 +177,15 @@ async def list_workflows(workspace_id: UUID, pool: Pool):
     return [dict(r) for r in rows]
 
 
-@router.post("/v1/workflows/{workflow_id}/versions", status_code=201)
+@router.post("/v1/workflows/{workflow_id}/versions", status_code=201, 
+             dependencies=[Depends(require("editor", "workflow"))])
 async def publish_version(workflow_id: UUID, body: VersionCreate, pool: Pool):
     async with pool.acquire() as conn:
         async with conn.transaction():
             return await _publish(conn, workflow_id, body.definition)
 
 
-@router.get("/v1/workflows/{workflow_id}/versions/{version}")
+@router.get("/v1/workflows/{workflow_id}/versions/{version}", dependencies=[Depends(require("viewer", "workflow"))])
 async def get_version(workflow_id: UUID, version: int, pool: Pool):
     row = await pool.fetchrow(
         "SELECT id, version, definition, created_at FROM workflow_versions WHERE workflow_id = $1 AND version = $2",
@@ -181,21 +197,23 @@ async def get_version(workflow_id: UUID, version: int, pool: Pool):
     out["definition"] = _decode_json(out["definition"])
     return out
 
-@router.post("/v1/workflows/{workflow_id}/executions", status_code=202)
+@router.post("/v1/workflows/{workflow_id}/executions", status_code=202,
+              dependencies=[Depends(require("editor", "workflow"))])
 async def trigger_execution(
     workflow_id: UUID,
     response: Response,
     pool: Pool,
+    user: CurrentUser,
     idempotency_key: Annotated[str | None, Header(max_length=255)] = None,
     input: Annotated[Any, Body()] = None,
 ):
-    row, created = await _start_execution(pool, workflow_id, input, idempotency_key, "api")
+    row, created = await _start_execution(pool, workflow_id, input, idempotency_key, f"user:{user}")
     if not created:
         response.status_code = 200
     return row
 
 
-@router.get("/v1/executions/{execution_id}")
+@router.get("/v1/executions/{execution_id}", dependencies=[Depends(require("viewer", "execution"))])
 async def get_execution(execution_id: UUID, pool: Pool):
     row = await pool.fetchrow(
         """SELECT id, workflow_id, workflow_version_id, status::text AS status, initiated_by,
@@ -208,7 +226,7 @@ async def get_execution(execution_id: UUID, pool: Pool):
     return dict(row)
 
 
-@router.get("/v1/executions/{execution_id}/events")
+@router.get("/v1/executions/{execution_id}/events", dependencies=[Depends(require("viewer", "execution"))])
 async def get_events(execution_id: UUID, pool: Pool):
     exists = await pool.fetchval("SELECT 1 FROM workflow_executions WHERE id = $1", execution_id)
     if exists is None:
@@ -226,7 +244,8 @@ async def get_events(execution_id: UUID, pool: Pool):
     return events
 
 
-@router.post("/v1/workflows/{workflow_id}/webhooks", status_code=201)
+@router.post("/v1/workflows/{workflow_id}/webhooks", status_code=201, 
+              dependencies=[Depends(require("admin", "workflow"))])
 async def create_webhook(workflow_id: UUID, body: WebhookCreate, pool: Pool):
     token = secrets.token_urlsafe(32)
     try:

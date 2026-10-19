@@ -12,6 +12,8 @@ from app.main import create_app
 
 MIGRATIONS = sorted(pathlib.Path(__file__).resolve().parents[2].glob("db/migrations/*.up.sql"))
 
+TEST_SECRET = "test-secret-" + "x" * 40
+
 
 async def _migrate(dsn: str) -> None:
     conn = await asyncpg.connect(dsn)
@@ -32,13 +34,60 @@ def dsn():
 
 
 @pytest_asyncio.fixture
-async def client(dsn):
+async def app(dsn):
     app = create_app()
     app.state.pool = await asyncpg.create_pool(dsn, min_size=1, max_size=5)
-    transport = httpx.ASGITransport(app=app)  # talks to the app directly, no network
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
-        yield c
+    app.state.jwt_secret = TEST_SECRET      # lifespan is not run by ASGITransport
+    yield app
     await app.state.pool.close()
+
+
+def _http(app, headers=None) -> httpx.AsyncClient:
+    return httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test", headers=headers
+    )
+
+
+async def register_and_login(c: httpx.AsyncClient) -> tuple[dict, str]:
+    email = f"u{uuid.uuid4().hex[:10]}@example.com"
+    pw = "correct-horse-battery"
+    r = await c.post("/v1/auth/register", json={"email": email, "password": pw})
+    assert r.status_code == 201, r.text
+    r = await c.post("/v1/auth/login", json={"email": email, "password": pw})
+    assert r.status_code == 200, r.text
+    return {"Authorization": f"Bearer {r.json()['access_token']}"}, email
+
+
+@pytest_asyncio.fixture
+async def anon_client(app):
+    async with _http(app) as c:
+        yield c
+
+
+@pytest_asyncio.fixture
+async def client(app):
+    """A client logged in as a fresh user."""
+    async with _http(app) as anon:
+        headers, _ = await register_and_login(anon)
+    async with _http(app, headers) as c:
+        yield c
+
+
+@pytest_asyncio.fixture
+async def new_user(app):
+    """Factory: returns (client, email) for another freshly registered user."""
+    made = []
+
+    async def make():
+        async with _http(app) as anon:
+            headers, email = await register_and_login(anon)
+        c = _http(app, headers)
+        made.append(c)
+        return c, email
+
+    yield make
+    for c in made:
+        await c.aclose()
 
 
 @pytest_asyncio.fixture
