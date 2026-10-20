@@ -9,3 +9,15 @@
    events and never recomputes on replay.
 5. **Schema owner**: golang-migrate (`db/migrations`) owns the database schema.
 6. **KB means 1024 bytes** for payload threshold.
+7. **Environments**: staging is the mutable draft plus test snapshots; production is the
+   published, numbered, immutable versions. `workflows.production_version_id` is the live
+   pointer, and rollback only moves it.
+8. **Idempotency scope**: (workflow, environment, key). A staging test can never collide
+   with production.
+9. **Webhooks reference a node**: the canvas node says "starts here"; the hashed token and
+   URL live in the `webhooks` table. Secrets never enter versioned definitions.
+10. **Validation**: field rules (Pydantic) first, then graph and catalog rules, collected
+    as issues with a node id. Go and Python share fixtures in schemas/fixtures.
+11. **Reaper, ZSET leases, 404-vs-403 policy, stream tickets**: see earlier phases;
+    outsiders get 404, low roles get 403.
+12. **Trigger nodes stay unavailable** until the engine can complete them.

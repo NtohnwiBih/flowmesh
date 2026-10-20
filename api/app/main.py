@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from app.auth import router as auth_router
 from app.routes import router
 from app.stream import router as stream_router
+from app.meta import router as meta_router
 
 
 @asynccontextmanager
@@ -26,6 +27,7 @@ def create_app() -> FastAPI:
     app.include_router(auth_router)
     app.include_router(router)
     app.include_router(stream_router)
+    app.include_router(meta_router)
     return app
 
 

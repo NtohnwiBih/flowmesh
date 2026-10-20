@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "nodes": [
+    {
+      "id": "a",
+      "type": "x"
+    },
+    {
+      "id": "b",
+      "type": "x"
+    },
+    {
+      "id": "c",
+      "type": "x"
+    },
+    {
+      "id": "d",
+      "type": "x"
+    }
+  ],
+  "edges": [
+    {
+      "from": "a",
+      "to": "b"
+    },
+    {
+      "from": "a",
+      "to": "c"
+    },
+    {
+      "from": "b",
+      "to": "d"
+    },
+    {
+      "from": "c",
+      "to": "d"
+    }
+  ]
+}

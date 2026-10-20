@@ -10,7 +10,8 @@ CHAIN = {
     "schema_version": 1,
     "nodes": [
         {"id": "a", "type": "http", "config": {"method": "GET", "url": "http://localhost:8000/"}},
-        {"id": "b", "type": "http", "retry": {"max_attempts": 3, "backoff_seconds": 1}},
+        {"id": "b", "type": "http", "config": {"method": "GET", "url": "http://localhost:8000/"},
+         "retry": {"max_attempts": 3, "backoff_seconds": 1}},
     ],
     "edges": [{"from": "a", "to": "b"}],
 }

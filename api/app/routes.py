@@ -13,6 +13,9 @@ from app.definition import Definition
 from app.deps import Pool
 from app.auth import CurrentUser, require
 
+from app.catalog import NODE_TYPES 
+from app.validation import catalog_issues
+
 router = APIRouter()
 
 
@@ -50,17 +53,32 @@ def _decode_json(value):
     return json.loads(value) if isinstance(value, str) else value
 
 
+def _reject_if_invalid(defn: Definition) -> None:
+    issues = catalog_issues(defn)
+    if issues:
+        raise HTTPException(
+            422,
+            detail={"message": "definition failed validation",
+                    "issues": [i.model_dump(exclude_none=True) for i in issues]},
+        )
+
+
 async def _publish(conn: asyncpg.Connection, workflow_id: UUID, defn: Definition) -> dict:
+    _reject_if_invalid(defn)  # unknown or unavailable node types, bad configs
     # Lock the workflow row so two concurrent publishes cannot pick the same number.
     locked = await conn.fetchval("SELECT id FROM workflows WHERE id = $1 FOR UPDATE", workflow_id)
     if locked is None:
         raise HTTPException(404, "workflow not found")
     row = await conn.fetchrow(
-        """INSERT INTO workflow_versions (workflow_id, version, definition)
-           SELECT $1::uuid, COALESCE(MAX(version), 0) + 1, $2::jsonb
-             FROM workflow_versions WHERE workflow_id = $1::uuid
+        """INSERT INTO workflow_versions (workflow_id, version, definition, environment)
+           SELECT $1::uuid, COALESCE(MAX(version), 0) + 1, $2::jsonb, 'production'::environment
+             FROM workflow_versions WHERE workflow_id = $1::uuid AND environment = 'production'
            RETURNING id, version, created_at""",
         workflow_id, _dump(defn),
+    )
+    await conn.execute(
+        "UPDATE workflows SET production_version_id = $2, updated_at = NOW() WHERE id = $1",
+        workflow_id, row["id"],
     )
     return dict(row)
 
@@ -76,26 +94,23 @@ async def _start_execution(
     idempotency_key: str | None,
     initiated_by: str,
 ) -> tuple[dict, bool]:
-    """Create a PENDING execution of the latest version.
+    """Create a PENDING production execution of the live version.
     Returns (row, created). created is False when the idempotency key was already used."""
-    wf = await pool.fetchrow("SELECT id, is_active FROM workflows WHERE id = $1", workflow_id)
+    wf = await pool.fetchrow(
+        "SELECT id, is_active, production_version_id FROM workflows WHERE id = $1", workflow_id)
     if wf is None:
         raise HTTPException(404, "workflow not found")
     if not wf["is_active"]:
         raise HTTPException(409, "workflow is not active")
-
-    version_id = await pool.fetchval(
-        "SELECT id FROM workflow_versions WHERE workflow_id = $1 ORDER BY version DESC LIMIT 1",
-        workflow_id,
-    )
+    version_id = wf["production_version_id"]
     if version_id is None:
         raise HTTPException(409, "workflow has no published version")
 
     row = await pool.fetchrow(
         """INSERT INTO workflow_executions
-               (workflow_id, workflow_version_id, initiated_by, idempotency_key, input)
-           VALUES ($1, $2, $3, $4, $5::jsonb)
-           ON CONFLICT (workflow_id, idempotency_key) DO NOTHING
+               (workflow_id, workflow_version_id, environment, initiated_by, idempotency_key, input)
+           VALUES ($1, $2, 'production'::environment, $3, $4, $5::jsonb)
+           ON CONFLICT (workflow_id, environment, idempotency_key) DO NOTHING
            RETURNING id, status::text AS status, workflow_version_id""",
         workflow_id, version_id, initiated_by, idempotency_key,
         None if input_value is None else json.dumps(input_value),
@@ -104,7 +119,7 @@ async def _start_execution(
         return dict(row), True
     row = await pool.fetchrow(
         """SELECT id, status::text AS status, workflow_version_id FROM workflow_executions
-           WHERE workflow_id = $1 AND idempotency_key = $2""",
+           WHERE workflow_id = $1 AND environment = 'production' AND idempotency_key = $2""",
         workflow_id, idempotency_key,
     )
     return dict(row), False

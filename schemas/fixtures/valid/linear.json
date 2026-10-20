@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "nodes": [
+    {
+      "id": "a",
+      "type": "x",
+      "name": "Fetch",
+      "ui": {
+        "x": 50,
+        "y": 230
+      }
+    },
+    {
+      "id": "b",
+      "type": "x",
+      "retry": {
+        "max_attempts": 3,
+        "backoff_seconds": 5
+      },
+      "config": {
+        "url": "x"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "a",
+      "to": "b",
+      "label": "true",
+      "ui": {
+        "source_handle": "right",
+        "target_handle": "left"
+      }
+    }
+  ]
+}

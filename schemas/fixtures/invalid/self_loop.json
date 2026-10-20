@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "nodes": [
+    {
+      "id": "a",
+      "type": "x"
+    }
+  ],
+  "edges": [
+    {
+      "from": "a",
+      "to": "a"
+    }
+  ]
+}

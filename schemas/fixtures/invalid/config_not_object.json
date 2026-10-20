@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "nodes": [
+    {
+      "id": "a",
+      "type": "x",
+      "config": 5
+    }
+  ],
+  "edges": []
+}
