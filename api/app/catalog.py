@@ -6,13 +6,13 @@ from jsonschema import Draft202012Validator
 # and the UI will build each node's form from the same document.
 NODE_TYPES: list[dict[str, Any]] = [
     {
-        "id": "webhook", "label": "Webhook", "category": "Triggers", "icon": "webhook",
-        "description": "Starts the workflow when its URL is called.",
-        "available": False, "unavailable_reason": "Trigger nodes need engine support (coming soon).",
+        "id": "webhook", "label": "Webhook", "category": "Triggers", "icon": "webhook", "trigger": True,
+        "description": "Starts the workflow when its URL is called. Its output is {body: <payload>}.",
+        "available": True, "unavailable_reason": None,
         "config_schema": {"type": "object", "additionalProperties": False, "properties": {}},
     },
     {
-        "id": "schedule", "label": "Schedule", "category": "Triggers", "icon": "clock",
+        "id": "schedule", "label": "Schedule", "category": "Triggers", "icon": "clock", "trigger": True,
         "description": "Starts the workflow on a timetable.",
         "available": False, "unavailable_reason": "Needs the scheduler (coming soon).",
         "config_schema": {"type": "object", "properties": {}},

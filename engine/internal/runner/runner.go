@@ -105,6 +105,15 @@ func (r *Runner) Advance(ctx context.Context, executionID string) error {
 			return fmt.Errorf("execution %s: %w", executionID, err)
 		}
 
+		// Trigger nodes carry no work: the engine completes them itself.
+		wrote, err := r.completeTriggers(ctx, executionID, def, st)
+		if err != nil {
+			return err
+		}
+		if wrote {
+			continue
+		}
+
 		actions := scheduler.Next(def, st)
 		if len(actions) == 0 {
 			return r.settle(ctx, executionID, def, st)
@@ -140,8 +149,14 @@ func (r *Runner) Advance(ctx context.Context, executionID string) error {
 			if !ok {
 				return fmt.Errorf("scheduler returned unknown node %q", a.NodeID)
 			}
+			if isTrigger(node.Type) {
+				continue // no task: completed by completeTriggers on the next pass
+			}
 			task := dispatch.NewTask(executionID, node, a.Attempt)
 			task.Context = buildContext(def, st)
+			if _, err := r.disp.Enqueue(ctx, task, a.Delay); err != nil {
+				return err
+			}
 		}
 	}
 	return fmt.Errorf("execution %s: advance did not settle", executionID)

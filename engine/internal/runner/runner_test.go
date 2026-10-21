@@ -350,3 +350,58 @@ func TestInputAndUpstreamOutputReachDownstreamNodes(t *testing.T) {
 		t.Errorf("second node saw %s", seen["second"])
 	}
 }
+
+// A workflow made only of a trigger needs no worker at all.
+func TestTriggerNodeCompletesWithoutAWorker(t *testing.T) {
+	d := fresh(t)
+	execID := seedExecution(t, `{"schema_version":1,"nodes":[{"id":"hook","type":"webhook"}],"edges":[]}`)
+	if _, err := pool.Exec(context.Background(),
+		`UPDATE workflow_executions SET input = '{"name":"Ada"}' WHERE id = $1`, execID); err != nil {
+		t.Fatal(err)
+	}
+	startRunner(t, d) // deliberately no worker
+	waitStatus(t, execID, "COMPLETED", 10*time.Second)
+
+	evs := loadEvents(t, execID) // STARTED, SCHEDULED, COMPLETED, EXECUTION_COMPLETED
+	if len(evs) != 4 || evs[2].Type != eventstore.EventNodeCompleted {
+		t.Fatalf("unexpected timeline: %+v", evs)
+	}
+	var out struct{ Body map[string]string }
+	if err := json.Unmarshal(evs[2].InlinePayload, &out); err != nil || out.Body["name"] != "Ada" {
+		t.Errorf("trigger output = %s (%v)", evs[2].InlinePayload, err)
+	}
+}
+
+// The trigger's payload reaches the next node through the template context.
+func TestDownstreamNodeSeesTriggerPayload(t *testing.T) {
+	d := fresh(t)
+	execID := seedExecution(t, `{"schema_version":1,
+	 "nodes":[{"id":"hook","type":"webhook"},
+	          {"id":"next","type":"http","config":{"who":"{{ nodes.hook.body.name }}"}}],
+	 "edges":[{"from":"hook","to":"next"}]}`)
+	if _, err := pool.Exec(context.Background(),
+		`UPDATE workflow_executions SET input = '{"name":"Ada"}' WHERE id = $1`, execID); err != nil {
+		t.Fatal(err)
+	}
+
+	var mu sync.Mutex
+	var seen json.RawMessage
+	handler := func(_ context.Context, tk dispatch.Task) (json.RawMessage, error) {
+		resolved, err := worker.Resolve(tk.Config, tk.Context)
+		mu.Lock()
+		seen = resolved
+		mu.Unlock()
+		return json.RawMessage(`{}`), err
+	}
+	startRunner(t, d)
+	startWorker(t, d, handler)
+	waitStatus(t, execID, "COMPLETED", 10*time.Second)
+
+	mu.Lock()
+	defer mu.Unlock()
+	var got map[string]string
+	_ = json.Unmarshal(seen, &got)
+	if got["who"] != "Ada" {
+		t.Errorf("next node saw %s", seen)
+	}
+}

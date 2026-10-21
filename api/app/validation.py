@@ -22,6 +22,15 @@ def catalog_issues(defn: DefinitionShape) -> list[Issue]:
         for err in sorted(VALIDATORS[n.type].iter_errors(n.config or {}), key=lambda e: list(e.absolute_path)):
             path = ".".join(["config", *map(str, err.absolute_path)])
             issues.append(Issue(code="invalid_config", node_id=n.id, path=path, message=err.message))
+    incoming = {e.to for e in defn.edges}
+    triggers = [n for n in defn.nodes if BY_ID.get(n.type, {}).get("trigger")]
+    for n in triggers:
+        if n.id in incoming:
+            issues.append(Issue(code="trigger_has_input", node_id=n.id,
+                                message="a trigger node cannot have incoming connections"))
+    for n in triggers[1:]:
+        issues.append(Issue(code="multiple_triggers", node_id=n.id,
+                            message="a workflow can have only one trigger node"))
     return issues
 
 

@@ -1,0 +1,1 @@
+ALTER TABLE workflow_drafts DROP COLUMN IF EXISTS revision;

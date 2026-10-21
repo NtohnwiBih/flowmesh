@@ -1,20 +1,21 @@
 import hashlib
 import json
 import secrets
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 import asyncpg
-from fastapi import APIRouter,Body, Depends, Header, HTTPException, Request, Response
+from fastapi import APIRouter,Body, Depends, Header, HTTPException, Request, Response, Query
 from pydantic import BaseModel, Field
 
-from app.definition import Definition
+from app.definition import Definition, definition_hash
 
 from app.deps import Pool
 from app.auth import CurrentUser, require
 
 from app.catalog import NODE_TYPES 
-from app.validation import catalog_issues
+from app.validation import catalog_issues, collect_issues
+
 
 router = APIRouter()
 
@@ -41,6 +42,8 @@ class VersionCreate(BaseModel):
 
 class WebhookCreate(BaseModel):
     name: str = Field(min_length=1, max_length=255)
+    environment: Literal["staging", "production"] = "production"
+    node_id: str | None = Field(default=None, max_length=100)
 
 
 # ------------------------------------------------------------------ helpers
@@ -53,19 +56,25 @@ def _decode_json(value):
     return json.loads(value) if isinstance(value, str) else value
 
 
+def _raise_issues(issues) -> None:
+    raise HTTPException(
+        422,
+        detail={"message": "definition failed validation",
+                "issues": [i.model_dump(exclude_none=True) for i in issues]},
+    )
+
+
 def _reject_if_invalid(defn: Definition) -> None:
     issues = catalog_issues(defn)
     if issues:
-        raise HTTPException(
-            422,
-            detail={"message": "definition failed validation",
-                    "issues": [i.model_dump(exclude_none=True) for i in issues]},
-        )
+        _raise_issues(issues)
 
 
-async def _publish(conn: asyncpg.Connection, workflow_id: UUID, defn: Definition) -> dict:
-    _reject_if_invalid(defn)  # unknown or unavailable node types, bad configs
-    # Lock the workflow row so two concurrent publishes cannot pick the same number.
+async def _publish(conn: asyncpg.Connection, workflow_id: UUID, defn: Definition,
+                   *, overwrite_draft: bool = True) -> dict:
+    """Create the next production version and make it live.
+    Lock order everywhere is: workflow row, then draft row."""
+    _reject_if_invalid(defn)
     locked = await conn.fetchval("SELECT id FROM workflows WHERE id = $1 FOR UPDATE", workflow_id)
     if locked is None:
         raise HTTPException(404, "workflow not found")
@@ -80,7 +89,42 @@ async def _publish(conn: asyncpg.Connection, workflow_id: UUID, defn: Definition
         "UPDATE workflows SET production_version_id = $2, updated_at = NOW() WHERE id = $1",
         workflow_id, row["id"],
     )
+    if overwrite_draft:   # direct publish of a given definition: the draft follows it
+        await conn.execute(
+            """INSERT INTO workflow_drafts (workflow_id, definition, base_version)
+               VALUES ($1, $2::jsonb, $3)
+               ON CONFLICT (workflow_id) DO UPDATE
+                  SET definition = EXCLUDED.definition, base_version = EXCLUDED.base_version,
+                      revision = workflow_drafts.revision + 1, updated_at = NOW()""",
+            workflow_id, _dump(defn), row["version"],
+        )
+    else:                 # publishing the draft itself: only record what it is based on
+        await conn.execute(
+            "UPDATE workflow_drafts SET base_version = $2 WHERE workflow_id = $1",
+            workflow_id, row["version"],
+        )
     return dict(row)
+
+
+async def _staging_version(pool: asyncpg.Pool, workflow_id: UUID) -> UUID:
+    """Snapshot the current draft as an unnumbered staging version.
+    An unchanged draft reuses its snapshot (unique on workflow + hash)."""
+    row = await pool.fetchrow("SELECT definition FROM workflow_drafts WHERE workflow_id = $1", workflow_id)
+    if row is None:
+        raise HTTPException(409, "workflow has no draft")
+    raw = _decode_json(row["definition"])
+    issues = collect_issues(raw)
+    if issues:
+        _raise_issues(issues)
+    defn = Definition.model_validate(raw)
+    return await pool.fetchval(
+        """INSERT INTO workflow_versions (workflow_id, version, definition, environment, definition_hash)
+           VALUES ($1, NULL, $2::jsonb, 'staging'::environment, $3)
+           ON CONFLICT (workflow_id, definition_hash) WHERE environment = 'staging'
+           DO UPDATE SET definition_hash = EXCLUDED.definition_hash
+           RETURNING id""",
+        workflow_id, _dump(defn), definition_hash(raw),
+    )
 
 
 def _hash_token(token: str) -> str:
@@ -93,34 +137,40 @@ async def _start_execution(
     input_value,
     idempotency_key: str | None,
     initiated_by: str,
+    environment: str = "production",
 ) -> tuple[dict, bool]:
-    """Create a PENDING production execution of the live version.
-    Returns (row, created). created is False when the idempotency key was already used."""
+    """Create a PENDING execution. Production runs the live version, staging runs a
+    snapshot of the draft. Returns (row, created); created is False when the
+    idempotency key was already used in this environment."""
     wf = await pool.fetchrow(
         "SELECT id, is_active, production_version_id FROM workflows WHERE id = $1", workflow_id)
     if wf is None:
         raise HTTPException(404, "workflow not found")
     if not wf["is_active"]:
         raise HTTPException(409, "workflow is not active")
-    version_id = wf["production_version_id"]
-    if version_id is None:
-        raise HTTPException(409, "workflow has no published version")
+    if environment == "staging":
+        version_id = await _staging_version(pool, workflow_id)
+    else:
+        version_id = wf["production_version_id"]
+        if version_id is None:
+            raise HTTPException(409, "workflow has no published version")
 
     row = await pool.fetchrow(
         """INSERT INTO workflow_executions
                (workflow_id, workflow_version_id, environment, initiated_by, idempotency_key, input)
-           VALUES ($1, $2, 'production'::environment, $3, $4, $5::jsonb)
+           VALUES ($1, $2, $3::environment, $4, $5, $6::jsonb)
            ON CONFLICT (workflow_id, environment, idempotency_key) DO NOTHING
-           RETURNING id, status::text AS status, workflow_version_id""",
-        workflow_id, version_id, initiated_by, idempotency_key,
+           RETURNING id, status::text AS status, environment::text AS environment, workflow_version_id""",
+        workflow_id, version_id, environment, initiated_by, idempotency_key,
         None if input_value is None else json.dumps(input_value),
     )
     if row is not None:
         return dict(row), True
     row = await pool.fetchrow(
-        """SELECT id, status::text AS status, workflow_version_id FROM workflow_executions
-           WHERE workflow_id = $1 AND environment = 'production' AND idempotency_key = $2""",
-        workflow_id, idempotency_key,
+        """SELECT id, status::text AS status, environment::text AS environment, workflow_version_id
+             FROM workflow_executions
+            WHERE workflow_id = $1 AND environment = $2::environment AND idempotency_key = $3""",
+        workflow_id, environment, idempotency_key,
     )
     return dict(row), False
 
@@ -178,16 +228,27 @@ async def create_workflow(workspace_id: UUID, body: WorkflowCreate, pool: Pool):
             out["latest_version"] = None
             if body.definition is not None:
                 out["latest_version"] = (await _publish(conn, wf["id"], body.definition))["version"]
+            else:
+                await conn.execute(
+                    "INSERT INTO workflow_drafts (workflow_id, definition) VALUES ($1, $2::jsonb)",
+                    wf["id"], '{"schema_version":1,"nodes":[],"edges":[]}',
+                )
     return out
 
 
-@router.get("/v1/workspaces/{workspace_id}/workflows", dependencies=[Depends(require("viewer", "workspace"))])
-async def list_workflows(workspace_id: UUID, pool: Pool):
+@router.get("/v1/workspaces/{workspace_id}/workflows",
+            dependencies=[Depends(require("viewer", "workspace"))])
+async def list_workflows(workspace_id: UUID, pool: Pool,
+                         include_archived: Annotated[bool, Query()] = False):
     rows = await pool.fetch(
         """SELECT w.id, w.name, w.description, w.is_active, w.created_at,
-                  (SELECT MAX(version) FROM workflow_versions v WHERE v.workflow_id = w.id) AS latest_version
-             FROM workflows w WHERE w.workspace_id = $1 ORDER BY w.created_at""",
-        workspace_id,
+                  (SELECT MAX(version) FROM workflow_versions v
+                    WHERE v.workflow_id = w.id AND v.environment = 'production') AS latest_version,
+                  pv.version AS production_version
+             FROM workflows w LEFT JOIN workflow_versions pv ON pv.id = w.production_version_id
+            WHERE w.workspace_id = $1 AND ($2 OR w.is_active)
+            ORDER BY w.created_at""",
+        workspace_id, include_archived,
     )
     return [dict(r) for r in rows]
 
@@ -213,16 +274,18 @@ async def get_version(workflow_id: UUID, version: int, pool: Pool):
     return out
 
 @router.post("/v1/workflows/{workflow_id}/executions", status_code=202,
-              dependencies=[Depends(require("editor", "workflow"))])
+             dependencies=[Depends(require("editor", "workflow"))])
 async def trigger_execution(
     workflow_id: UUID,
     response: Response,
     pool: Pool,
     user: CurrentUser,
     idempotency_key: Annotated[str | None, Header(max_length=255)] = None,
+    environment: Annotated[Literal["staging", "production"], Query()] = "production",
     input: Annotated[Any, Body()] = None,
 ):
-    row, created = await _start_execution(pool, workflow_id, input, idempotency_key, f"user:{user}")
+    row, created = await _start_execution(
+        pool, workflow_id, input, idempotency_key, f"user:{user}", environment)
     if not created:
         response.status_code = 200
     return row
@@ -265,9 +328,10 @@ async def create_webhook(workflow_id: UUID, body: WebhookCreate, pool: Pool):
     token = secrets.token_urlsafe(32)
     try:
         row = await pool.fetchrow(
-            """INSERT INTO webhooks (workflow_id, name, token_hash) VALUES ($1, $2, $3)
-               RETURNING id, workflow_id, name, created_at""",
-            workflow_id, body.name, _hash_token(token),
+            """INSERT INTO webhooks (workflow_id, name, token_hash, environment, node_id)
+               VALUES ($1, $2, $3, $4::environment, $5)
+               RETURNING id, workflow_id, name, environment::text AS environment, node_id, created_at""",
+            workflow_id, body.name, _hash_token(token), body.environment, body.node_id,
         )
     except asyncpg.ForeignKeyViolationError:
         raise HTTPException(404, "workflow not found")
@@ -286,7 +350,8 @@ async def receive_hook(
     idempotency_key: Annotated[str | None, Header(max_length=255)] = None,
 ):
     hook = await pool.fetchrow(
-        "SELECT id, workflow_id FROM webhooks WHERE token_hash = $1 AND is_active",
+        """SELECT id, workflow_id, environment::text AS environment
+             FROM webhooks WHERE token_hash = $1 AND is_active""",
         _hash_token(token),
     )
     if hook is None:
@@ -307,7 +372,8 @@ async def receive_hook(
         raise HTTPException(422, "body must be valid JSON")
 
     row, created = await _start_execution(
-        pool, hook["workflow_id"], payload, idempotency_key, f"webhook:{hook['id']}"
+        pool, hook["workflow_id"], payload, idempotency_key,
+        f"webhook:{hook['id']}", hook["environment"],
     )
     if not created:
         response.status_code = 200

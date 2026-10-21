@@ -1,7 +1,9 @@
+import hashlib
+import json
 from collections import deque
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator, ValidationError
 
 
 class Issue(BaseModel):
@@ -102,3 +104,16 @@ class Definition(DefinitionShape):
         if issues:
             raise ValueError(issues[0].message)
         return self
+
+def normalize(raw: Any) -> Any:
+    """The canonical form publishing would store, when the definition is valid."""
+    try:
+        return Definition.model_validate(raw).model_dump(mode="json", by_alias=True, exclude_none=True)
+    except ValidationError:
+        return raw
+
+
+def definition_hash(raw: Any) -> str:
+    """Stable fingerprint: key order, defaults and 50 vs 50.0 do not matter."""
+    text = json.dumps(normalize(raw), sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(text.encode()).hexdigest()

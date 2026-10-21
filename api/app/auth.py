@@ -84,6 +84,10 @@ _ROLE_SQL = {
                      JOIN workflows w ON w.id = e.workflow_id
                      JOIN workspace_members m ON m.workspace_id = w.workspace_id AND m.user_id = $2
                     WHERE e.id = $1""",
+    "webhook": """SELECT m.role::text FROM webhooks h
+                    JOIN workflows w ON w.id = h.workflow_id
+                    JOIN workspace_members m ON m.workspace_id = w.workspace_id AND m.user_id = $2
+                   WHERE h.id = $1""",
 }
 
 
@@ -152,16 +156,59 @@ async def login(body: Login, request: Request, pool: Pool):
     }
 
 
+async def _guard_last_admin(conn: asyncpg.Connection, workspace_id: UUID,
+                            user_id: UUID, new_role: str | None) -> None:
+    """Refuse changes that would leave a workspace with no admin.
+    FOR UPDATE locks the admin rows, so two simultaneous demotions queue up:
+    the second one sees the first one's result."""
+    rows = await conn.fetch(
+        "SELECT user_id FROM workspace_members WHERE workspace_id = $1 AND role = 'admin' FOR UPDATE",
+        workspace_id,
+    )
+    admins = {r["user_id"] for r in rows}
+    if user_id in admins and new_role != "admin" and len(admins) == 1:
+        raise HTTPException(409, "cannot remove or demote the last admin")
+
+
 @router.post("/v1/workspaces/{workspace_id}/members", status_code=200,
              dependencies=[Depends(require("admin", "workspace"))])
 async def set_member(workspace_id: UUID, body: MemberSet, pool: Pool):
-    user_id = await pool.fetchval("SELECT id FROM users WHERE email = $1", body.email.strip().lower())
-    if user_id is None:
-        raise HTTPException(404, "no user with that email")
-    await pool.execute(
-        """INSERT INTO workspace_members (workspace_id, user_id, role)
-           VALUES ($1, $2, $3::workspace_role)
-           ON CONFLICT (workspace_id, user_id) DO UPDATE SET role = EXCLUDED.role""",
-        workspace_id, user_id, body.role,
-    )
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            user_id = await conn.fetchval("SELECT id FROM users WHERE email = $1", body.email.strip().lower())
+            if user_id is None:
+                raise HTTPException(404, "no user with that email")
+            await _guard_last_admin(conn, workspace_id, user_id, body.role)
+            await conn.execute(
+                """INSERT INTO workspace_members (workspace_id, user_id, role)
+                   VALUES ($1, $2, $3::workspace_role)
+                   ON CONFLICT (workspace_id, user_id) DO UPDATE SET role = EXCLUDED.role""",
+                workspace_id, user_id, body.role,
+            )
     return {"user_id": user_id, "role": body.role}
+
+
+@router.get("/v1/workspaces/{workspace_id}/members",
+            dependencies=[Depends(require("viewer", "workspace"))])
+async def list_members(workspace_id: UUID, pool: Pool):
+    rows = await pool.fetch(
+        """SELECT u.id AS user_id, u.email, m.role::text AS role, m.created_at
+             FROM workspace_members m JOIN users u ON u.id = m.user_id
+            WHERE m.workspace_id = $1 ORDER BY m.created_at""",
+        workspace_id,
+    )
+    return [dict(r) for r in rows]
+
+
+@router.delete("/v1/workspaces/{workspace_id}/members/{user_id}", status_code=204,
+               dependencies=[Depends(require("admin", "workspace"))])
+async def remove_member(workspace_id: UUID, user_id: UUID, pool: Pool):
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await _guard_last_admin(conn, workspace_id, user_id, None)
+            gone = await conn.fetchval(
+                "DELETE FROM workspace_members WHERE workspace_id = $1 AND user_id = $2 RETURNING 1",
+                workspace_id, user_id,
+            )
+    if gone is None:
+        raise HTTPException(404, "not a member")

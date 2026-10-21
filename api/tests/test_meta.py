@@ -31,7 +31,8 @@ async def test_me_and_catalog_require_auth(anon_client):
 async def test_catalog_lists_types_with_schemas(client):
     types = {t["id"]: t for t in (await client.get("/v1/node-types")).json()}
     assert types["http"]["available"] is True
-    assert types["webhook"]["available"] is False and types["webhook"]["unavailable_reason"]
+    assert types["webhook"]["available"] is True and types["webhook"]["trigger"] is True
+    assert types["schedule"]["available"] is False and types["schedule"]["unavailable_reason"]
     assert all("config_schema" in t for t in types.values())
 
 
@@ -76,7 +77,7 @@ async def test_validate_needs_editor_role(client, workspace, new_user):
 # ---- publish enforces the catalog ------------------------------------------
 @pytest.mark.parametrize("node, code", [
     ({"id": "a", "type": "email"}, "unknown_node_type"),
-    ({"id": "a", "type": "webhook"}, "node_type_unavailable"),
+    ({"id": "a", "type": "schedule"}, "node_type_unavailable"),
     ({"id": "a", "type": "http"}, "invalid_config"),
     ({"id": "a", "type": "http", "config": {"url": "http://x", "colour": "red"}}, "invalid_config"),
     ({"id": "a", "type": "http", "config": {"url": "http://x", "method": "FETCH"}}, "invalid_config"),
@@ -146,3 +147,16 @@ async def test_executions_list_rejects_bad_input_and_outsiders(client, workspace
     assert (await client.get(url, params={"limit": 0})).status_code == 422
     other, _ = await new_user()
     assert (await other.get(url)).status_code == 404
+
+
+async def test_trigger_rules(client, workspace):
+    wf = await make_workflow(client, workspace)
+    http_b = {"id": "b", "type": "http", "config": {"url": "http://x"}}
+    bad = {"schema_version": 1, "edges": [{"from": "b", "to": "h1"}],
+           "nodes": [{"id": "h1", "type": "webhook"}, {"id": "h2", "type": "webhook"}, http_b]}
+    issues = (await client.post(f"/v1/workflows/{wf}/validate", json={"definition": bad})).json()["issues"]
+    assert {"trigger_has_input", "multiple_triggers"} <= {i["code"] for i in issues}
+
+    good = {"schema_version": 1, "edges": [{"from": "h1", "to": "b"}],
+            "nodes": [{"id": "h1", "type": "webhook"}, http_b]}
+    assert (await client.post(f"/v1/workflows/{wf}/versions", json={"definition": good})).status_code == 201
