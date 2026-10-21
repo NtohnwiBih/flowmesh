@@ -21,3 +21,12 @@
 11. **Reaper, ZSET leases, 404-vs-403 policy, stream tickets**: see earlier phases;
     outsiders get 404, low roles get 403.
 12. **Trigger nodes stay unavailable** until the engine can complete them.
+13. **Drafts**: one mutable draft per workflow, saved leniently, guarded by an ETag (revision
+    counter). Publish and staging runs validate strictly. Publish requires If-Match.
+14. **Staging runs** snapshot the draft into an unnumbered `staging` version, deduplicated by a
+    canonical hash. `staging_verified` = this exact draft completed a staging run (soft gate).
+15. **Rollback** moves `production_version_id`; versions are never rewritten.
+16. **Trigger nodes** are completed by the engine from replayed state, output `{"body": input}`.
+    One trigger per workflow, no incoming edges.
+17. **Last admin**: role changes and removals lock the admin rows and refuse to leave none.
+18. **Lock order**: workflow row, then draft row, in every code path.
