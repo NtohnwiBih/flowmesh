@@ -1,4 +1,5 @@
-.PHONY: up down logs smoke migrate-new test run-engine run-worker run-api
+.PHONY: up down logs smoke migrate-new test test-engine test-api test-web \
+        run-engine run-worker run-api run-web install-web check-web
 
 up:
 	docker compose up -d postgres redis minio
@@ -16,9 +17,23 @@ smoke:
 migrate-new:
 	migrate create -ext sql -dir db/migrations -seq $(name)
 
-test:
+# ---- tests ----------------------------------------------------------------
+test: test-engine test-api test-web
+
+test-engine:
 	cd engine && go test ./...
 
+test-api:
+	cd api && .venv/bin/pytest -q
+
+test-web:
+	cd web && npm test
+
+# Everything CI runs for the web app: lint, types, tests, production build.
+check-web:
+	cd web && npm run lint -- --max-warnings 0 && npm run typecheck && npm test && npm run build
+
+# ---- run the stack (one terminal each) ------------------------------------------
 run-engine:
 	set -a && . ./.env && set +a && cd engine && go run ./cmd/engine
 
@@ -27,3 +42,9 @@ run-worker:
 
 run-api:
 	set -a && . ./.env && set +a && cd api && .venv/bin/uvicorn app.main:app --reload --port 8080
+
+run-web:
+	cd web && npm run dev
+
+install-web:
+	cd web && npm ci
