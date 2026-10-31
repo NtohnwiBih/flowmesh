@@ -183,7 +183,7 @@
 .react-flow__controls { overflow:hidden; border:1px solid var(--border); border-radius:.375rem; box-shadow:none; }
 .react-flow__controls-button { border-color:var(--border); background:var(--surface); fill:var(--foreground); }
 .react-flow__controls-button:hover { background:var(--accent); }
-.flow-minimap { width:120px !important; height:76px !important; border:1px solid var(--border); border-radius:.375rem; background:var(--surface) !important; }
+.flow-minimap { border:1px solid var(--border); border-radius:.375rem; background:var(--surface) !important; } /* size is set via the MiniMap style prop */
 .react-flow__minimap-mask { fill:color-mix(in oklab,var(--workspace) 80%,transparent); }
 .react-flow__minimap-node { fill:var(--primary); }
 

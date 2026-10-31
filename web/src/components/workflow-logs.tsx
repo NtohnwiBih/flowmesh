@@ -28,7 +28,7 @@ export function WorkflowLogs({ logs, running, onClear }: { logs: WorkflowLog[]; 
           {running && <span className="flex items-center gap-1.5 text-[10px] text-warning"><span className="size-1.5 animate-pulse rounded-full bg-warning" />Running</span>}
         </div>
         <div className="flex items-center gap-1">
-          <span className="hidden text-[10px] text-muted-foreground sm:inline">Simulated execution</span>
+          <span className="hidden text-[10px] text-muted-foreground sm:inline">Dry run (preview)</span>
           <Button variant="ghost" size="icon" className="size-7" aria-label="Clear logs" title="Clear logs" disabled={!logs.length} onClick={onClear}><Trash2 className="size-3.5" /></Button>
           <Button variant="ghost" size="icon" className="size-7" aria-label={open ? "Collapse logs" : "Expand logs"} title={open ? "Collapse logs" : "Expand logs"} aria-expanded={open} aria-controls="workflow-log-output" onClick={() => setOpen((value) => !value)}>{open ? <ChevronDown className="size-3.5" /> : <ChevronUp className="size-3.5" />}</Button>
         </div>

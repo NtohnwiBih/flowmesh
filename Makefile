@@ -1,5 +1,6 @@
 .PHONY: up down logs smoke migrate-new test test-engine test-api test-web \
-        run-engine run-worker run-api run-web install-web check-web
+        run-engine run-worker run-api run-web install-web check-web dump-catalog \
+		seed-4d
 
 up:
 	docker compose up -d postgres redis minio
@@ -48,3 +49,9 @@ run-web:
 
 install-web:
 	cd web && npm ci
+
+dump-catalog:
+	cd api && .venv/bin/python scripts/dump_catalog.py
+
+seed-4d:
+	bash scripts/seed-4d.sh

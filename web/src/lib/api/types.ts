@@ -48,3 +48,43 @@ export type WorkflowDetail = {
   updated_at: string;
   production_version: number | null;
 };
+
+// ---- node catalog (GET /v1/node-types) ------------------------------------------
+export type JsonSchema = {
+  type?: "string" | "number" | "integer" | "boolean" | "object" | "array";
+  title?: string;
+  description?: string;
+  default?: unknown;
+  enum?: unknown[];
+  minLength?: number;
+  maxLength?: number;
+  minimum?: number;
+  maximum?: number;
+  properties?: Record<string, JsonSchema>;
+  required?: string[];
+  additionalProperties?: boolean;
+};
+
+export type NodeType = {
+  id: string;
+  label: string;
+  category: string;
+  icon: string;
+  description: string;
+  available: boolean;
+  unavailable_reason: string | null;
+  trigger?: boolean; // present only on trigger types
+  config_schema: JsonSchema;
+};
+
+// ---- drafts, validation, publishing ---------------------------------------------
+export type SaveResult = { etag: string; revision: number; updated_at: string; issues: Issue[] };
+export type ValidateResult = { valid: boolean; issues: Issue[] };
+export type PublishResult = {
+  id: string;
+  version: number;
+  created_at: string;
+  staging_verified: boolean;
+  warnings: { code: string; message: string }[];
+};
+export type VersionDetail = { id: string; version: number; definition: Definition; created_at: string };

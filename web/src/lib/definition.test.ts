@@ -152,3 +152,14 @@ describe("cycle checks", () => {
     expect(wouldCreateCycle(links, "b", "b")).toBe(true);
   });
 });
+
+describe("toFlow with the node catalog", () => {
+  const def: Definition = { schema_version: 1, nodes: [{ id: "a", type: "http" }, { id: "b", type: "schedule" }, { id: "c", type: "mystery" }], edges: [] };
+  it("takes kind and icon from the catalog when it knows the type", () => {
+    const meta = (t: string) => (t === "http" ? { kind: "From the catalog", icon: "catalog-icon" } : undefined);
+    const { nodes } = toFlow(def, meta);
+    expect(nodes[0].data).toMatchObject({ kind: "From the catalog", icon: "catalog-icon" });
+    expect(nodes[1].data).toMatchObject({ kind: "Schedule", icon: "clock" }); // falls back to built-in metadata
+    expect(nodes[2].data).toMatchObject({ kind: "mystery", icon: "action" });
+  });
+});

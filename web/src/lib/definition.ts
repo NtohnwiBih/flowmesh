@@ -62,9 +62,12 @@ const SIDES = ["top", "right", "bottom", "left"] as const;
 const DEFAULT_SOURCE = "right";
 const DEFAULT_TARGET = "left";
 
-const META: Record<string, { kind: string; icon: string }> = {
+export type TypeMeta = { kind: string; icon: string };
+
+// Fallback display data, used when the node catalog is not available.
+const META: Record<string, TypeMeta> = {
   webhook: { kind: "Webhook", icon: "webhook" },
-  schedule: { kind: "Schedule", icon: "action" },
+  schedule: { kind: "Schedule", icon: "clock" },
   http: { kind: "HTTP Request", icon: "http" },
   condition: { kind: "Condition", icon: "condition" },
   code: { kind: "Code", icon: "code" },
@@ -153,10 +156,13 @@ export function normalize(def: Definition): Definition {
 }
 
 // ---- conversion -------------------------------------------------------------------
-export function toFlow(def: Definition): { nodes: FlowNode[]; edges: FlowEdge[] } {
+export function toFlow(
+  def: Definition,
+  metaFor?: (type: string) => TypeMeta | undefined,
+): { nodes: FlowNode[]; edges: FlowEdge[] } {
   const laid = withLayout(def);
   const nodes: FlowNode[] = laid.nodes.map((n) => {
-    const meta = META[n.type] ?? { kind: n.type, icon: "action" };
+    const meta = metaFor?.(n.type) ?? META[n.type] ?? { kind: n.type, icon: "action" };
     const data: NodeData = {
       label: n.name ?? n.id,
       description: describe(n.type, n.config),
